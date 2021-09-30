@@ -1,0 +1,120 @@
+#include <stdio.h>
+#include <numeric>
+#include <stdlib.h>
+#include <cuda.h>
+#include <time.h>
+#include <math.h> 
+#define BLOCK_SIZE 32
+#define N 8192
+__global__ void reduceKernel(float *d_out, float *d_in);
+int main(void) {
+ size_t size = N*sizeof(float);
+ size_t size_o = size/BLOCK_SIZE;
+ float h_in[N];
+ float h_out[N/BLOCK_SIZE];
+ float *d_in, *d_out;
+ cudaEvent_t start, stop;
+ cudaEventCreate(&start);
+ cudaEventCreate(&stop);
+ cudaError_t err;
+ for (int i = 0; i < N; i++)
+ {
+ h_in[i] = 1.0f;}
+
+ cudaMalloc((void**)&d_in, size);
+ cudaMemcpy(d_in, h_in, size, cudaMemcpyHostToDevice);
+ cudaMalloc((void**)&d_out, size_o);
+ int grid_size = N/BLOCK_SIZE;
+ printf("Grid Size is: %d\n", grid_size);
+ printf("Block Size is: %d\n", BLOCK_SIZE);
+
+ int counter = 0;
+int q = N;
+//calculates how many iterations of kernels are required
+    for(int i=0; i<BLOCK_SIZE; i++){
+        if((q/BLOCK_SIZE)>= BLOCK_SIZE){
+            q = q/BLOCK_SIZE;
+           counter++;
+        }
+    }
+//calcuates number of threads required for final reduction
+ int t=BLOCK_SIZE;
+ for(int i=0; i<counter; i++){
+     t = t*BLOCK_SIZE;
+ }
+ printf("%d\n",t);
+ t = (N/t);
+ dim3 threadsPerBlock(BLOCK_SIZE);
+ dim3 blocks(grid_size);
+ cudaEventRecord(start);
+
+ reduceKernel<<<blocks, threadsPerBlock>>>(d_out, d_in);
+ // Wait for GPU to finish before accessing on host
+ err = cudaDeviceSynchronize();
+printf("Run kernel: %s\n", cudaGetErrorString(err));
+
+ printf("\n");
+ //copy the partial result from Device to Host
+ err = cudaMemcpy(h_out, d_out, size_o, cudaMemcpyDeviceToHost);
+ printf("Copy h_out off device: %s\n",cudaGetErrorString(err));
+
+ for(int i=0; i<counter; i++){
+ cudaMemcpy(d_in, h_out, size, cudaMemcpyHostToDevice);
+ reduceKernel<<<blocks, threadsPerBlock>>>(d_out, d_in);
+ err = cudaDeviceSynchronize();
+
+err = cudaMemcpy(h_out, d_out, size_o, cudaMemcpyDeviceToHost);
+ printf("Copy h_out off device: %s\n",cudaGetErrorString(err));
+ }
+ clock_t start2 = clock();
+ dim3 threadsPerBlock2(t);
+ cudaMemcpy(d_in, h_out, size, cudaMemcpyHostToDevice);
+ reduceKernel<<<1, threadsPerBlock2>>>(d_out, d_in);
+ err = cudaDeviceSynchronize();
+
+ err = cudaMemcpy(h_out, d_out, size_o, cudaMemcpyDeviceToHost);
+ printf("Copy h_out off device: %s\n",cudaGetErrorString(err));
+ clock_t stop2 = clock();
+   double elapsed = (double) (stop2-start2)*1000.0 /CLOCKS_PER_SEC;
+    printf("Time elapsed in ms: %f \n", elapsed);
+
+ 
+ float final_reduction = 0.0f;
+// for (int i = 0; i <17; i++){
+// printf(" %f", h_out[i]);
+
+ //}
+ final_reduction = h_out[0];
+ cudaEventRecord(stop);
+ cudaEventSynchronize(stop);
+ float milliseconds = 0;
+ cudaEventElapsedTime(&milliseconds, start, stop);
+ printf("Elapsed time was %f\n milliseconds", milliseconds);
+
+ printf("And the final reduction is: %f\n", final_reduction);
+ cudaFree(d_in);
+ cudaFree(d_out);
+ 
+
+ }
+__global__ void reduceKernel(float* d_out, float* d_in) {
+ int myId = threadIdx.x + blockDim.x * blockIdx.x; // ID relative to whole array
+ int tid = threadIdx.x; // Local ID within the current block
+ __shared__ float temp[BLOCK_SIZE];
+ temp[tid] = d_in[myId];
+ __syncthreads();
+ // Perform the  reduction in shared memory
+ for (unsigned int s = blockDim.x/2; s >= 1; s >>= 1)
+ {
+ if (tid < s)
+ {
+ temp[tid] += temp[tid + s];
+ }
+ __syncthreads(); // make sure all adds at one stage are done!
+ }
+ // only thread 0 writes result for this block back to global memory
+ if (tid == 0)
+ {
+ d_out[blockIdx.x] = temp[tid];
+ }
+}

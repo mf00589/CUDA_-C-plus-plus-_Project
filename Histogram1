@@ -1,0 +1,64 @@
+#include <stdio.h>
+#include <numeric>
+#include <stdlib.h>
+#include <cuda.h>
+#include <time.h>
+#define BLOCK_SIZE 64
+#define SHAR_SIZE 8
+#define N 2048
+
+__global__ void simple_histogram(int *d_bins, const int *d_in, const int BIN_COUNT);
+
+int main(void){
+	int *d_bins;
+	int *d_in;
+    int BIN_COUNT=8;
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    //setting unified memory
+	cudaMallocManaged(&d_bins,BIN_COUNT*sizeof(int));
+	cudaMallocManaged(&d_in,N*sizeof(int));
+   //populating the Array
+	for(int i=0; i<N; i++){
+		d_in[i]=i;
+	}
+	for(int i=0; i<BIN_COUNT; i++){
+		d_bins[i]=0;
+	}
+	int grid_size = N/BLOCK_SIZE;
+	//start the timer
+	cudaEventRecord(start);
+	//invoke the kernel
+                clock_t start2 = clock();
+	simple_histogram<<<grid_size,BLOCK_SIZE>>>(d_bins,d_in,BIN_COUNT);
+    //wait for the GPU to finish
+	cudaDeviceSynchronize();
+	cudaEventRecord(stop);
+
+	for (int i=0; i<BIN_COUNT; i++){
+			printf("Bin no. %d: Count = %d\n",i,d_bins[i]);
+		}
+
+	cudaEventSynchronize(stop);
+                clock_t stop2 = clock();
+                double elapsed = (double) (stop2-start2)*1000.0 /CLOCKS_PER_SEC;
+                printf("Time elapsed in ms: %f \n", elapsed);
+	        float milliseconds = 0;
+	        cudaEventElapsedTime(&milliseconds, start, stop);
+	        printf("Elapsed time was %f\n milliseconds", milliseconds);
+	        printf("\n");
+return 0;
+
+}
+__global__ void simple_histogram(int *d_bins, const int *d_in, const int BIN_COUNT){
+	//get thread id
+	int myId = threadIdx.x + blockDim.x* blockIdx.x;
+	int myItem = d_in[myId];
+	//compute which bin the data belongs to
+	int myBin = myItem % BIN_COUNT;
+	//Add the data to the global memory
+	atomicAdd(&(d_bins[myBin]),1);
+}

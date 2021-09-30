@@ -1,0 +1,150 @@
+#include <stdio.h>
+#include <numeric>
+#include <stdlib.h>
+#include <cuda.h>
+#define BLOCK_SIZE 1024
+#define N 2048
+__global__ void scanKernel(int n, float *idata);
+
+int main(void){
+	float *idata;
+	float *temptest;
+
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaError_t err;
+
+	cudaMallocManaged(&idata, N*sizeof(float));
+	cudaMallocManaged(&temptest, (N/BLOCK_SIZE)*sizeof(float));
+	for (int i = 0; i<N; i++){
+		idata[i]= 1.0f;
+	}
+
+		int grid_size = (N/BLOCK_SIZE);
+		cudaEventRecord(start);
+		//invoke the kernel for first scan
+		scanKernel<<<grid_size, BLOCK_SIZE>>>(BLOCK_SIZE, idata);
+        //wait for GPU to finish executing
+		err = cudaDeviceSynchronize();
+
+
+		printf("Run kernel: %s\n", cudaGetErrorString(err));
+
+		for (int i=0; i<N; i++){
+			printf("%f ", idata[i]);
+		}
+		printf("\n");
+		printf("temp array check:");
+		int counter=0;
+        //this for for loop gets the last element for each of
+		//the block and puts it into a new temparray
+		for (int i=(BLOCK_SIZE-1); i<N; i=i+(BLOCK_SIZE)){
+			temptest[counter]=idata[i];
+			counter++;
+			printf("%f ",temptest[i]);
+
+		}
+        //prints the values within the temp array
+		for (int i=0; i<(N/BLOCK_SIZE); i++){
+			printf("%f ",temptest[i]);
+		}
+
+
+        printf("\n");
+        cudaError_t err2;
+
+         //performs the second scan on the temp array
+        scanKernel<<<grid_size, BLOCK_SIZE>>>(BLOCK_SIZE, temptest);
+
+        err2 = cudaDeviceSynchronize();
+       printf("Run kernel: %s\n", cudaGetErrorString(err2));
+       printf("Final Block :");
+       //for loop that Map the values from the temp array to the origional array
+       for (int i=0; i<(N/BLOCK_SIZE); i++){
+       printf("%f ", temptest[i]);
+        	      	}
+        printf("\n");
+        printf("Map:");
+        printf("\n");
+        int counter2 =0;
+        int n=2;
+        int n1=1;
+
+
+//starts from the second block and adds the result to the original array
+        //this is done for every block so the final element includes the final scan value
+        for (int i=BLOCK_SIZE; i<N;i++){
+        	//checks if i is lees the each of the block
+          if(i<(n*BLOCK_SIZE)&&i>=n1*BLOCK_SIZE){
+        	  //adds the nth element from temp array to the ith block
+        	idata[i]+=temptest[counter2];}
+          //checks if the last element value with the block is updated and then moves to
+          //next block by incrementing the counter variable
+          if(i==((n*BLOCK_SIZE)-1)){
+        	counter2++;
+        	n++;
+        	n1++;
+          }
+          printf("%f ", idata[i]);
+        }
+        cudaEventRecord(stop);
+        printf("\n");
+        cudaEventSynchronize(stop);
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        printf("Elapsed time was %f\n milliseconds", milliseconds);
+        printf("\n");
+
+        cudaFree(idata);
+        cudaFree(temptest);
+		return 0;
+	}
+
+__global__ void scanKernel(int n, float *idata){
+	//gets the tread id
+	int thIdx = threadIdx.x +blockIdx.x *blockDim.x;
+	int tid = threadIdx.x;
+    //creates 2 buffers one to read from and the other to write to
+	//this is done in order to prevent race condition
+	__shared__ float temp[BLOCK_SIZE];
+	__shared__ float temp2[BLOCK_SIZE];
+
+	//boolean to check which buffer the data is being read from
+	bool tempSelector = true;
+	//each thread reads on data item from global to shared memory buffer
+	temp[tid] = idata[thIdx];
+	//waits for threads to finish
+	__syncthreads();
+
+	for (int offset = 1; offset <n; offset *=2){
+		//checks that the threads are working on correct array elements with data
+		if(tid>= offset&&thIdx<N)
+		{
+			//reads from the first buffer into second buffer for odd loop numbers
+			if (tempSelector){
+				temp2[tid]= temp[tid] + temp[tid-offset];
+			}
+			else{
+				//for even number read from second to the first buffer
+				temp[tid] = temp2[tid] + temp2[tid- offset];
+			}
+		}
+		//makes sure all the unmodified values are copied between the two buffers
+		if (tid<offset){
+			if(tempSelector) temp2[tid] = temp[tid];
+			else temp[tid] = temp2[tid];
+		}
+//update the condition and make sure all threads are finish executing
+		tempSelector = !tempSelector;
+		__syncthreads();
+	}
+	//outs the value from the correct buffer to global memory
+	if(tempSelector){
+		idata[thIdx]= temp[tid];
+	}else{
+		idata[thIdx] = temp2[tid];
+	}
+
+	}
+
